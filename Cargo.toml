@@ -1,11 +1,12 @@
 [package]
-name = "aleph_contracts"
+name = "hunters"
 version = "0.1.0"
 authors = ["[your_name] <[your_email]>"]
 edition = "2021"
 
 [dependencies]
 ink = { version = "4.3.0", default-features = false }
+openbrush = { git = "https://github.com/Brushfam/openbrush-contracts", tag = "4.0.0", default-features = false, features = ["psp34"] }
 
 scale = { package = "parity-scale-codec", version = "3.6.9", default-features = false, features = ["derive"] }
 scale-info = { version = "2.10.0", default-features = false, features = ["derive"], optional = true }
@@ -14,6 +15,7 @@ scale-info = { version = "2.10.0", default-features = false, features = ["derive
 ink_e2e = "4.3.0"
 
 [lib]
+name = "hunters"
 path = "lib.rs"
 
 [features]
@@ -22,6 +24,7 @@ std = [
     "ink/std",
     "scale/std",
     "scale-info/std",
+    "openbrush/std",
 ]
 ink-as-dependency = []
 e2e-tests = []

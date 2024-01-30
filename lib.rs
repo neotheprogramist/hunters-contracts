@@ -1,140 +1,420 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
-#[ink::contract]
-mod aleph_contracts {
+#[openbrush::implementation(PSP34, PSP34Mintable, PSP34Burnable, PSP34Enumerable, PSP34Metadata)]
+#[openbrush::contract]
+pub mod hunters {
+    use openbrush::traits::Storage;
 
-    /// Defines the storage of your contract.
-    /// Add new fields to the below struct in order
-    /// to add new static storage fields to your contract.
+    #[derive(Default, Storage)]
     #[ink(storage)]
-    pub struct AlephContracts {
-        /// Stores a single `bool` value on the storage.
-        value: bool,
+    pub struct Contract {
+        #[storage_field]
+        psp34: psp34::Data,
+        #[storage_field]
+        enumerable: enumerable::Data,
+        #[storage_field]
+        metadata: metadata::Data,
+        next_id: u8,
     }
 
-    impl AlephContracts {
-        /// Constructor that initializes the `bool` value to the given `init_value`.
+    impl Contract {
         #[ink(constructor)]
-        pub fn new(init_value: bool) -> Self {
-            Self { value: init_value }
+        pub fn new() -> Self {
+            Self::default()
         }
 
-        /// Constructor that initializes the `bool` value to `false`.
-        ///
-        /// Constructors can delegate to other constructors.
-        #[ink(constructor)]
-        pub fn default() -> Self {
-            Self::new(Default::default())
-        }
-
-        /// A message that can be called on instantiated contracts.
-        /// This one flips the value of the stored `bool` from `true`
-        /// to `false` and vice versa.
         #[ink(message)]
-        pub fn flip(&mut self) {
-            self.value = !self.value;
-        }
-
-        /// Simply returns the current value of our `bool`.
-        #[ink(message)]
-        pub fn get(&self) -> bool {
-            self.value
+        pub fn mint_next(&mut self, account: AccountId) -> Result<(), PSP34Error> {
+            psp34::Internal::_mint_to(self, account, Id::U8(self.next_id))?;
+            self.next_id += 1;
+            Ok(())
         }
     }
 
-    /// Unit tests in Rust are normally defined within such a `#[cfg(test)]`
-    /// module and test functions are marked with a `#[test]` attribute.
-    /// The below code is technically just normal Rust code.
-    #[cfg(test)]
-    mod tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
-        use super::*;
-
-        /// We test if the default constructor does its job.
-        #[ink::test]
-        fn default_works() {
-            let aleph_contracts = AlephContracts::default();
-            assert_eq!(aleph_contracts.get(), false);
-        }
-
-        /// We test a simple use case of our contract.
-        #[ink::test]
-        fn it_works() {
-            let mut aleph_contracts = AlephContracts::new(false);
-            assert_eq!(aleph_contracts.get(), false);
-            aleph_contracts.flip();
-            assert_eq!(aleph_contracts.get(), true);
-        }
-    }
-
-
-    /// This is how you'd write end-to-end (E2E) or integration tests for ink! contracts.
-    ///
-    /// When running these you need to make sure that you:
-    /// - Compile the tests with the `e2e-tests` feature flag enabled (`--features e2e-tests`)
-    /// - Are running a Substrate node which contains `pallet-contracts` in the background
     #[cfg(all(test, feature = "e2e-tests"))]
-    mod e2e_tests {
-        /// Imports all the definitions from the outer scope so we can use them here.
+    pub mod tests {
+        use openbrush::contracts::psp34::psp34_external::PSP34;
+        #[rustfmt::skip]
         use super::*;
+        #[rustfmt::skip]
+        use ink_e2e::{build_message, PolkadotConfig};
 
-        /// A helper function used for calling contract messages.
-        use ink_e2e::build_message;
+        use test_helpers::{address_of, balance_of, owner_of};
 
-        /// The End-to-End test `Result` type.
-        type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+        type E2EResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-        /// We test that we can upload and instantiate the contract using its default constructor.
         #[ink_e2e::test]
-        async fn default_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let constructor = AlephContractsRef::default();
-
-            // When
-            let contract_account_id = client
-                .instantiate("aleph_contracts", &ink_e2e::alice(), constructor, 0, None)
+        async fn return_collection_id_of_account(
+            mut client: ink_e2e::Client<C, E>,
+        ) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
                 .await
                 .expect("instantiate failed")
                 .account_id;
 
-            // Then
-            let get = build_message::<AlephContractsRef>(contract_account_id.clone())
-                .call(|aleph_contracts| aleph_contracts.get());
-            let get_result = client.call_dry_run(&ink_e2e::alice(), &get, 0, None).await;
-            assert!(matches!(get_result.return_value(), false));
+            let account_id = ink::primitives::AccountId::from(address);
+
+            let expected_collection_id = Id::Bytes(AsRef::<[u8]>::as_ref(&account_id).to_vec());
+            let actual_collection_id = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.collection_id());
+                client.call_dry_run(&ink_e2e::alice(), &_msg, 0, None).await
+            }
+            .return_value();
+
+            assert_eq!(expected_collection_id, actual_collection_id);
 
             Ok(())
         }
 
-        /// We test that we can read and write a value from the on-chain contract contract.
         #[ink_e2e::test]
-        async fn it_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // Given
-            let constructor = AlephContractsRef::new(false);
-            let contract_account_id = client
-                .instantiate("aleph_contracts", &ink_e2e::bob(), constructor, 0, None)
+        async fn returns_total_supply(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
                 .await
                 .expect("instantiate failed")
                 .account_id;
 
-            let get = build_message::<AlephContractsRef>(contract_account_id.clone())
-                .call(|aleph_contracts| aleph_contracts.get());
-            let get_result = client.call_dry_run(&ink_e2e::bob(), &get, 0, None).await;
-            assert!(matches!(get_result.return_value(), false));
+            let expected_total_supply = 0;
+            let actual_total_supply = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.total_supply());
+                client.call_dry_run(&ink_e2e::alice(), &_msg, 0, None).await
+            };
 
-            // When
-            let flip = build_message::<AlephContractsRef>(contract_account_id.clone())
-                .call(|aleph_contracts| aleph_contracts.flip());
-            let _flip_result = client
-                .call(&ink_e2e::bob(), flip, 0, None)
+            assert_eq!(expected_total_supply, actual_total_supply.return_value());
+
+            for _ in 0..3 {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.mint_token());
+                let result = client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("mint_token failed");
+
+                assert_eq!(result.return_value(), Ok(()));
+            }
+
+            let expected_total_supply = 3;
+            let actual_total_supply = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.total_supply());
+                client.call_dry_run(&ink_e2e::alice(), &_msg, 0, None).await
+            };
+
+            assert_eq!(expected_total_supply, actual_total_supply.return_value());
+
+            Ok(())
+        }
+
+        #[ink_e2e::test]
+        async fn transfer_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
                 .await
-                .expect("flip failed");
+                .expect("instantiate failed")
+                .account_id;
 
-            // Then
-            let get = build_message::<AlephContractsRef>(contract_account_id.clone())
-                .call(|aleph_contracts| aleph_contracts.get());
-            let get_result = client.call_dry_run(&ink_e2e::bob(), &get, 0, None).await;
-            assert!(matches!(get_result.return_value(), true));
+            let mint_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.mint_token());
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("mint_token failed")
+            }
+            .return_value();
+
+            assert_eq!(mint_result, Ok(()));
+
+            let expected_balance = 1;
+            let actual_balance = balance_of!(client, address, Alice);
+
+            assert_eq!(expected_balance, actual_balance);
+            assert_eq!(0, balance_of!(client, address, Bob));
+
+            let transfer_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.transfer(address_of!(Bob), Id::U8(0), vec![]));
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("transfer_from failed")
+            }
+            .return_value();
+
+            assert_eq!(transfer_result, Ok(()));
+
+            assert_eq!(0, balance_of!(client, address, Alice));
+            assert_eq!(1, balance_of!(client, address, Bob));
+
+            Ok(())
+        }
+
+        #[ink_e2e::test]
+        async fn approved_transfer_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
+                .await
+                .expect("instantiate failed")
+                .account_id;
+
+            let mint_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.mint_token());
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("mint_token failed")
+            }
+            .return_value();
+
+            assert_eq!(mint_result, Ok(()));
+
+            let expected_balance = 1;
+            let actual_balance = balance_of!(client, address, Alice);
+
+            assert_eq!(expected_balance, actual_balance);
+            assert_eq!(0, balance_of!(client, address, Bob));
+
+            let approve_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.approve(address_of!(Bob), Some(Id::U8(0)), true));
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("approve failed")
+            }
+            .return_value();
+
+            assert_eq!(approve_result, Ok(()));
+
+            let transfer_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.transfer(address_of!(Bob), Id::U8(0), vec![]));
+                client
+                    .call(&ink_e2e::bob(), _msg, 0, None)
+                    .await
+                    .expect("transfer_from failed")
+            }
+            .return_value();
+
+            assert_eq!(transfer_result, Ok(()));
+
+            assert_eq!(0, balance_of!(client, address, Alice));
+            assert_eq!(1, balance_of!(client, address, Bob));
+
+            Ok(())
+        }
+
+        #[ink_e2e::test]
+        async fn approved_operator_transfer_works(
+            mut client: ink_e2e::Client<C, E>,
+        ) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
+                .await
+                .expect("instantiate failed")
+                .account_id;
+
+            let mint_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.mint_token());
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("mint_token failed")
+            }
+            .return_value();
+
+            assert_eq!(mint_result, Ok(()));
+
+            let expected_balance = 1;
+            let actual_balance = balance_of!(client, address, Alice);
+
+            assert_eq!(expected_balance, actual_balance);
+            assert_eq!(0, balance_of!(client, address, Bob));
+
+            let approve_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.approve(address_of!(Bob), None, true));
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("approve failed")
+            }
+            .return_value();
+
+            assert_eq!(approve_result, Ok(()));
+
+            let transfer_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.transfer(address_of!(Bob), Id::U8(0), vec![]));
+                client
+                    .call(&ink_e2e::bob(), _msg, 0, None)
+                    .await
+                    .expect("transfer_from failed")
+            }
+            .return_value();
+
+            assert_eq!(transfer_result, Ok(()));
+
+            assert_eq!(0, balance_of!(client, address, Alice));
+            assert_eq!(1, balance_of!(client, address, Bob));
+
+            Ok(())
+        }
+
+        #[ink_e2e::test]
+        async fn psp34_transfer_works(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
+                .await
+                .expect("instantiate failed")
+                .account_id;
+
+            let mint_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.mint_token());
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("mint_token failed")
+            }
+            .return_value();
+
+            assert_eq!(mint_result, Ok(()));
+
+            assert_eq!(
+                owner_of!(client, address, Id::U8(0)),
+                Some(address_of!(Alice))
+            );
+
+            let transfer_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.transfer(address_of!(Bob), Id::U8(0), vec![]));
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("transfer_from failed")
+            }
+            .return_value();
+
+            assert_eq!(transfer_result, Ok(()));
+
+            assert_eq!(
+                owner_of!(client, address, Id::U8(0)),
+                Some(address_of!(Bob))
+            );
+
+            Ok(())
+        }
+
+        #[ink_e2e::test]
+        async fn can_nextot_transfer_non_existing_token(
+            mut client: ink_e2e::Client<C, E>,
+        ) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
+                .await
+                .expect("instantiate failed")
+                .account_id;
+
+            assert_eq!(balance_of!(client, address, Alice), 0);
+
+            let transfer_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.transfer(address_of!(Bob), Id::U8(0), vec![]));
+                client.call_dry_run(&ink_e2e::alice(), &_msg, 0, None).await
+            }
+            .return_value();
+
+            assert!(matches!(transfer_result, Err(PSP34Error::TokenNotExists)));
+            assert_eq!(balance_of!(client, address, Alice), 0);
+
+            Ok(())
+        }
+
+        #[ink_e2e::test]
+        async fn cannot_transfer_without_allowance(
+            mut client: ink_e2e::Client<C, E>,
+        ) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
+                .await
+                .expect("instantiate failed")
+                .account_id;
+
+            let mint_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.mint_token());
+                client
+                    .call(&ink_e2e::alice(), _msg, 0, None)
+                    .await
+                    .expect("mint_token failed")
+            }
+            .return_value();
+
+            assert_eq!(mint_result, Ok(()));
+
+            let transfer_result = {
+                let _msg = build_message::<ContractRef>(address.clone())
+                    .call(|contract| contract.transfer(address_of!(Bob), Id::U8(0), vec![]));
+                client.call_dry_run(&ink_e2e::bob(), &_msg, 0, None).await
+            }
+            .return_value();
+
+            assert!(matches!(transfer_result, Err(PSP34Error::NotApproved)));
+            assert_eq!(balance_of!(client, address, Alice), 1);
+            assert_eq!(balance_of!(client, address, Bob), 0);
+
+            Ok(())
+        }
+
+        #[ink_e2e::test]
+        async fn can_mint_any_id(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
+            let constructor = ContractRef::new();
+            let address = client
+                .instantiate("my_psp34", &ink_e2e::alice(), constructor, 0, None)
+                .await
+                .expect("instantiate failed")
+                .account_id;
+
+            assert_eq!(balance_of!(client, address, Alice), 0);
+
+            let ids = vec![
+                Id::U8(0),
+                Id::U16(0),
+                Id::U32(0),
+                Id::U64(0),
+                Id::U128(0),
+                Id::Bytes(vec![0]),
+            ];
+
+            for id in ids {
+                let mint_result = {
+                    let _msg = build_message::<ContractRef>(address.clone())
+                        .call(|contract| contract.mint(id.clone()));
+                    client
+                        .call(&ink_e2e::alice(), _msg, 0, None)
+                        .await
+                        .expect("mint failed")
+                }
+                .return_value();
+
+                assert_eq!(mint_result, Ok(()));
+            }
+
+            assert_eq!(balance_of!(client, address, Alice), 6);
 
             Ok(())
         }
